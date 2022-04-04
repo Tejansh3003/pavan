@@ -1,0 +1,8 @@
+- hosts: java-jdk
+  gather_facts: yes
+  vars_files:
+    - "group_vars/java-jdk" 
+  roles:
+    - role: java-jdk
+      become: yes
+#      remote_src: true
