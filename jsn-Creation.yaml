@@ -1,0 +1,8 @@
+- hosts: localhost
+  gather_facts: yes
+  user: ndfs
+  vars_files:
+    - "group_vars/wildfly"
+  roles:
+    - role: json_creation    
+	
