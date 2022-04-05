@@ -1,0 +1,167 @@
+timestamps {
+    node ('master') {
+        def parametersArr = []
+        def WILDFLY_PORT= []
+        env.nexus_url = "bitbucket-nttdata-ndfs.com/nexus/repository"
+        
+        
+        stage('Define Parameters'){
+            parametersArr.add(booleanParam(name: 'JUST_UPDATE_JOB_CONFIG', description: 'Just update this job configuration from Bitbucket CI repository'))
+            parametersArr.add(string(defaultValue: '172.16.24.239', description: 'Private IP of the application server', name: 'APP_MACHINE_IP', trim: false))
+            parametersArr.add(string(defaultValue: '172.16.24.231', description: 'Private IP of the database server', name: 'DB_MACHINE_IP', trim: false))
+            parametersArr.add(booleanParam(name: 'MsSqlInstall', defaultValue: 'false', description: 'Select if Oracle Installation required'))
+            parametersArr.add(string(defaultValue: 'Softwares/DB_dumps/FG/FGENV6QCD_220721.bak', description: 'Nexus relative path to download MSSQL Dump', name: 'DATA_DUMP', trim: false))
+            parametersArr.add(string(defaultValue: 'FirstgenDaily', description: 'Enter domain name', name: 'DOMAIN_NAME', trim: false))
+            parametersArr.add(string(defaultValue: '15', description: 'Enter OFFSET_PORT ', name: 'OFFSET_VALUE', trim: true))
+            parametersArr.add(string(defaultValue: 'FirstgenDaily', description: 'Enter db user', name: 'DB_USER', trim: true))
+            parametersArr.add(string(defaultValue: 'FirstgenDaily', description: 'Enter db name', name: 'DB_NAME', trim: true))
+            parametersArr.add(string(defaultValue: 'ndfs.devops@apac.nttdata.com', description: 'Provide email address to be notified after the job completion', name: 'NOTIFY_TO', trim: false))
+ 			
+            properties([
+                parameters(parametersArr),
+                disableConcurrentBuilds(),
+                [$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '35', numToKeepStr: '40']]
+            ])
+        }
+        stage('Update Job Config'){
+            if(params.JUST_UPDATE_JOB_CONFIG) {
+                echo "Updating the Job Configurations from Bitbucket CI repository"
+                currentBuild.getRawBuild().getExecutor().interrupt(Result.SUCCESS) 
+                sleep(2)
+            } else {
+                echo "Continuing the build..."
+            }
+        }
+      stage('Cleaning the workspace'){
+           //cleanWs()
+        }
+       stage('Clone Ansible Playbooks'){
+            checkout changelog: false,
+                poll: false, 
+                scm: [
+                    $class: 'GitSCM', 
+                    branches: [[name: 'Linux_Wildfly20_with_Windows_MsSql19']],
+                    extensions: [], 
+                    userRemoteConfigs: [[ url: 'ssh://git@bitbucket-nttdata-ndfs.com:7999/cdscrip/fg_env_creation.git']]
+                ]
+        }
+
+       stage('Download Installers on Jenkins'){
+            dir('installers'){
+                echo 'Download FirstGen Artifacts'
+               withCredentials([usernamePassword(credentialsId: 'jenkins-nexus-creds', passwordVariable: 'nexus_password', usernameVariable: 'nexus_username')]) {
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/ApplicationFiles/FirstGen/wildfly-20.0.0.Final.zip ')
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/ApplicationFiles/FirstGen/FG_HOME.zip ')
+                   	sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/SQLServer/SQLServer2019-x64-ENU.zip -O SQLServer2019-x64-ENU.zip')
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/${DATA_DUMP} -O MSSQL_BACKUP_FILE.bak')
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/win-installers/sqljdbc_9.2.zip -O sqljdbc.zip')
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/linux-installers/jdk-8u202-linux-x64.rpm ')
+                    sh('wget -q https://${nexus_username}:${nexus_password}@${nexus_url}/Softwares/ConfigFiles/MergeUtility/MergeUtility.zip')
+                }
+            }
+        }
+       stage('Execute Ansible Playbooks'){
+            ansiColor('xterm') {
+                println('Updating IPs in varialbe files')  
+              
+                int i = "${OFFSET_VALUE}"
+    				WILDFLY_PORT = 8080 + i ;
+              	
+
+                sh("""        
+                sed -i "s|DB_MACHINE_IP|${DB_MACHINE_IP}|g" group_vars/*
+                sed -i "s|DOMAIN_NAME|${DOMAIN_NAME}|g" group_vars/*
+                sed -i "s|OFFSET_VALUE|${OFFSET_VALUE}|g" group_vars/*
+                sed -i "s|WILDFLY_PORT|${WILDFLY_PORT}|g" group_vars/*
+                sed -i "s|DB_USER|${DB_USER}|g" group_vars/*
+                sed -i "s|DB_NAME|${DB_NAME}|g" group_vars/*
+                sed -i "s|AZ_RESOURCE_HOSTNAME|${DB_MACHINE_IP}|g" group_vars/*               
+                sed -i "s|WORKSPACE|${WORKSPACE}|g" group_vars/*
+                sed -i "s|APP_MACHINE_IP|${APP_MACHINE_IP}|g" hosts
+                sed -i "s|DB_MACHINE_IP|${DB_MACHINE_IP}|g" hosts
+                """)
+              println('End of updatin Variable')
+            }
+        }
+        
+      
+	  stage('Execute Ms-sql Playbooks'){
+		if("${MsSqlInstall}".equalsIgnoreCase("true")) {
+         ansiColor('xterm') {           
+		    withCredentials([string(credentialsId: 'ndfs-cd-newwin-user', variable: 'password')]) {
+                    ansiblePlaybook become: true, becomeUser: 'DevOpsadmin', colorized: true, extras: "-e 'ansible_user=DevOpsadmin ansible_password=${password} become_pass=${password}' -vvv", installation: 'Ansible', inventory: 'hosts', playbook: 'mssql.yml'
+                }
+			}			
+        } 
+	  }
+      
+      stage('Execute Wildfly Playbooks'){
+		if("${MsSqlInstall}".equalsIgnoreCase("true")) {
+         ansiColor('xterm') {           
+		    withCredentials([string(credentialsId: 'ndfs-cd-linux-devops', variable: 'password')]) {
+                    ansiblePlaybook become: true, colorized: true, disableHostKeyChecking: true, extras: "-e 'ansible_become_pass=${password} ansible_sudo_pass=${password} ansible_password=${password} become_method=sudo' -vv", installation: 'Ansible', inventory: 'hosts', playbook: 'site.yml'
+                }
+			}			
+        } else {
+		  ansiColor('xterm') {           
+		    withCredentials([string(credentialsId: 'ndfs-cd-newwin-user', variable: 'password')]) {
+                    ansiblePlaybook become: true, becomeUser: 'DevOpsadmin', colorized: true, extras: "-e 'ansible_user=DevOpsadmin ansible_password=${password} become_pass=${password}' -vvv", installation: 'Ansible', inventory: 'hosts', playbook: 'mssql_schema.yml'
+                }
+              withCredentials([string(credentialsId: 'ndfs-cd-linux-devops', variable: 'password')]) {
+                    ansiblePlaybook become: true, colorized: true, disableHostKeyChecking: true, extras: "-e 'ansible_become_pass=${password} ansible_sudo_pass=${password} ansible_password=${password} become_method=sudo' -vv", installation: 'Ansible', inventory: 'hosts', playbook: 'site.yml'
+                }
+			}
+        }
+	}   
+    
+    stage('Execute Json Playbooks'){
+    	        ansiColor('xterm') {
+            	        ansiblePlaybook  colorized: true, extras: "-e 'ansible_user=ndfs' -vvv", installation: 'Ansible', playbook: 'json_creation.yml'
+        	}
+		}
+        
+        stage('Email Notification'){
+            sendEmail('SUCCESS')
+        }
+      stage('Cleaning the workspace'){
+          // cleanWs()
+        }
+    }
+}
+
+def sendEmail(status) {
+    def subject = "${JOB_NAME}#${BUILD_NUMBER}: ${status}"
+    if (status == "SUCCESS"){
+        def body = """
+                    Hi Team,
+                    <br><br>
+                    Following are the details for create execution
+                    <br>
+                    Build Number: ${BUILD_NUMBER}
+                    <br>
+                    Status: ${status}
+                    <br>
+                    APP SERVER IP: ${APP_MACHINE_IP}
+                    <br>
+                    DB SERVER IP: ${DB_MACHINE_IP}
+                    <br>
+                    <br>
+                    Find the logs in the attachment.
+                    <br>
+                    <br>
+                    Regards,
+                    <br>
+                    Devops Team.
+                    """
+
+        emailext attachLog: true,
+        attachmentsPattern: 'gitcheckouts/changeLog.html',
+        compressLog: true,
+        subject: "${subject}",
+        body: "${body}",
+        mimeType: 'text/html',
+        to: "${NOTIFY_TO}",
+        from: "NDFS DEVOPS <ndfs.devops@apac.nttdata.com>",
+        replyTo: "ndfs.devops@apac.nttdata.com"
+    }
+}
