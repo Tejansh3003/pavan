@@ -1,0 +1,8 @@
+- hosts: mssql
+  gather_facts: yes
+  become_method: runas
+  vars_files: "group_vars/mssql"
+  roles:
+    - role: mssql
+      remote_src: true
+  become: yes
