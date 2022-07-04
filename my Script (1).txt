@@ -1,6 +1,7 @@
 FG_env_Creation-Jenkinfile code
 
 
+
 timestamps {
     node ('master') {
         def parametersArr = []
